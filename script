@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+# Written by Patrick Fuechsel
+# Version 1.0
+
+# This script autoamtes the process of parsing out data from large nmap scans such as specific open ports, IPs, and version info on open ports.
+
+import os
+import xml.etree.ElementTree as ET
+import argparse
+
+def find_xml_files(directory):
+    """Recursively find all XML files in the given directory."""
+    xml_files = []
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.endswith('.xml'):
+                xml_files.append(os.path.join(root, file))
+    return xml_files
+
+def extract_info_from_xml(file_path, ports, extract_version=False):
+    """Extract IP addresses and optionally service versions from an Nmap XML file for specified ports including 'open' or 'open|filtered' states."""
+    info = {port: [] for port in ports}
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        for host in root.findall('./host'):
+            # Check if the host status is 'up'
+            status = host.find('status')
+            if status is not None and status.get('state') == 'up':
+                address_element = host.find('address')
+                if address_element is not None and address_element.get('addrtype') == 'ipv4':
+                    ip_address = address_element.get('addr')
+                    for port_element in host.findall('.//port'):
+                        port_id = port_element.get('portid')
+                        state_element = port_element.find('state')
+                        # Check if the port is 'open' or 'open|filtered'
+                        if port_id in ports and state_element is not None and state_element.get('state') in ['open', 'open|filtered']:
+                            service_element = port_element.find('service')
+                            version_info = service_element.get('product', '') if extract_version and service_element is not None else ''
+                            info[port_id].append((ip_address, version_info))
+    except ET.ParseError as e:
+        print(f"Error parsing XML file: {file_path} - {e}")
+    return info
+
+def main():
+    parser = argparse.ArgumentParser(description='Extract IP addresses and optionally service versions for specific open ports from Nmap XML scan files.',
+                                     epilog='''\
+Examples:
+  python port_scan_parser.py -p 80 443 -o results
+  python port_scan_parser.py -p 80 443 -v -o results
+  python port_scan_parser.py -p 80 443 -d /path/to/xml/files -o results
+  python port_scan_parser.py -p 80 443 -v -d /path/to/xml/files -o results
+''',
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('-p', '--ports', nargs='+', required=True, help='Port numbers to filter information')
+    parser.add_argument('-v', '--version', action='store_true', help='Extract service version information along with IP addresses')
+    parser.add_argument('-o', '--output', type=str, required=True, help='Base name for the output file(s), without path.')
+    parser.add_argument('-d', '--directory', type=str, default=os.getcwd(), help='Directory to search for XML files. Defaults to current directory if not specified.')
+    args = parser.parse_args()
+
+    ports = set(args.ports)
+    all_info = {port: [] for port in ports}
+
+    xml_files = find_xml_files(args.directory)
+    if xml_files:
+        print("Parsing through .xml files...")
+        for xml_file in xml_files:
+            info = extract_info_from_xml(xml_file, ports, args.version)
+            for port, entries in info.items():
+                all_info[port].extend(entries)
+    else:
+        print("No .xml files found in the specified directory.")
+
+    # Write the results to separate files for each port
+    for port, entries in all_info.items():
+        # Determine the output filename
+        output_filename = f"{args.output}_{port}.txt"
+        # Write the results to the output file
+        with open(output_filename, 'w') as file:
+            for ip, version_info in entries:
+                line = f"{ip}" if not args.version else f"{ip}, {version_info}"
+                file.write(line + '\n')
+        print(f"Information for port {port} extracted to {output_filename}")
+
+if __name__ == '__main__':
+    main()
